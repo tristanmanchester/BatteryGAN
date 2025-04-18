@@ -1,0 +1,55 @@
+# pixi environments
+.pixi/
+*.egg-info
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+.installed.cfg
+*.egg
+
+# PyTorch / model files
+*.pt
+*.pth
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
+# Data directories
+data/real_data/
+data/synthetic_data/
+data/generated/
+output/
+output/samples/
+output/generate/
+output/generate/data/
+output/generate/labels/
+
+# Training logs and checkpoints
+logs/
+checkpoints/

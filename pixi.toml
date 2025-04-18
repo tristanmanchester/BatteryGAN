@@ -1,0 +1,19 @@
+[project]
+authors = ["Tristan Manchester <tristan.manchester@diamond.ac.uk>"]
+channels = ["conda-forge"]
+name = "BatteryGAN"
+platforms = ["osx-arm64", "linux-64", "win-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+numpy = ">=2.2.4,<3"
+opencv = ">=4.11.0,<5"
+tqdm = ">=4.67.1,<5"
+matplotlib = ">=3.10.1,<4"
+tifffile = ">=2025.3.30,<2026"
+
+[pypi-dependencies]
+torch = "*"
+torchvision = "*"
