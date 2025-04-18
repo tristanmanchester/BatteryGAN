@@ -7,6 +7,8 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 import torchvision.models as models
 import itertools
+import yaml
+import argparse
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler  # Using torch.amp instead of torch.cuda.amp
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -21,13 +23,8 @@ class VGGPerceptualLoss(nn.Module):
         # Move model to the specified device
         self.device = device
         
-        try:
-            # Try to load with pretrained weights
-            vgg = models.vgg19(pretrained=True).features
-        except Exception as e:
-            # Fallback for newer PyTorch versions
-            print(f"Warning: {e}. Trying with weights parameter instead...")
-            vgg = models.vgg19(weights=models.VGG19_Weights.DEFAULT).features
+        # Use the recommended weights parameter instead of deprecated pretrained
+        vgg = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).features
         
         # Move to correct device and set to eval mode
         vgg = vgg.to(device).eval()
@@ -68,34 +65,51 @@ class VGGPerceptualLoss(nn.Module):
         # Calculate loss
         return self.criterion(x_features, y_features)
 
+def load_config(config_path):
+    """Load configuration from YAML file"""
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
 def main():
-    # Define paths
-    real_dir = "./data/real_data"
-    synthetic_dir = "./data/synthetic_data/data"
-    output_dir = "./output"
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train BatteryGAN model')
+    parser.add_argument('--config', type=str, default='config.yaml', help='Path to config file')
+    args = parser.parse_args()
+    
+    # Load configuration
+    config = load_config(args.config)
+    
+    # Extract configuration parameters
+    real_dir = config['data']['real_dir']
+    synthetic_dir = config['data']['synthetic_dir']
+    output_dir = config['data']['output_dir']
     
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "samples"), exist_ok=True)
     
     # Training parameters
-    batch_size = 1
-    epochs = 50
-    lr_g = 1e-4  # Generator learning rate
-    lr_d = 4e-4  # Discriminator learning rate (TTUR)
-    image_size = 256  # Image size
-    lambda_cycle = 10.0  # Cycle consistency weight
-    lambda_identity = 5.0  # Identity loss weight
-    lambda_perceptual = 1.0  # Perceptual loss weight
-    n_residual_blocks = 9  # Number of residual blocks in generator
-    use_multi_scale = True  # Whether to use multi-scale discriminator
+    batch_size = int(config['training']['batch_size'])
+    epochs = int(config['training']['epochs'])
+    lr_g = float(config['training']['lr_g'])
+    lr_d = float(config['training']['lr_d'])
+    image_size = int(config['training']['image_size'])
+    lambda_cycle = float(config['training']['lambda_cycle'])
+    lambda_identity = float(config['training']['lambda_identity'])
+    lambda_perceptual = float(config['training']['lambda_perceptual'])
+    n_residual_blocks = int(config['training']['n_residual_blocks'])
+    use_multi_scale = bool(config['training']['use_multi_scale'])
     
     # Get device and configure device-specific settings
     device = get_device()
     
     # Device-aware mixed precision training
-    # Only enable AMP on CUDA by default; MPS has limited mixed precision support
-    use_amp = device.type == 'cuda'  # Automatic mixed precision only on CUDA
+    # Use config value if provided, otherwise auto-detect based on device
+    if config['training']['use_amp'] is None:
+        use_amp = device.type == 'cuda'  # Automatic mixed precision only on CUDA by default
+    else:
+        use_amp = config['training']['use_amp']
+    
     amp_device_type = device.type  # Store the device type for autocast context
     
     print(f"Training configuration:")
@@ -137,13 +151,14 @@ def main():
     perceptual_loss = VGGPerceptualLoss(device)
     
     # Define optimizers with different learning rates
+    betas = tuple(float(beta) for beta in config['optimizer']['betas'])
     optimizer_G = torch.optim.Adam(
         itertools.chain(G.parameters(), F.parameters()), 
         lr=lr_g, 
-        betas=(0.5, 0.999)
+        betas=betas
     )
-    optimizer_D_real = torch.optim.Adam(D_real.parameters(), lr=lr_d, betas=(0.5, 0.999))
-    optimizer_D_syn = torch.optim.Adam(D_syn.parameters(), lr=lr_d, betas=(0.5, 0.999))
+    optimizer_D_real = torch.optim.Adam(D_real.parameters(), lr=lr_d, betas=betas)
+    optimizer_D_syn = torch.optim.Adam(D_syn.parameters(), lr=lr_d, betas=betas)
     
     # Learning rate schedulers
     scheduler_G = CosineAnnealingLR(optimizer_G, T_max=epochs)
@@ -328,8 +343,9 @@ def main():
               f"Avg_Loss_D_syn: {avg_d_syn_loss:.4f} "
               f"LR_G: {scheduler_G.get_last_lr()[0]:.6f}")
         
-        # Save sample outputs every 5 epochs
-        if epoch % 5 == 0 or epoch == 1:
+        # Save sample outputs based on config
+        save_sample_every = config['visualization']['save_sample_every']
+        if epoch % save_sample_every == 0 or epoch == 1:
             from src.utils import save_image
             import matplotlib.pyplot as plt
             import numpy as np
@@ -406,11 +422,13 @@ def main():
             axes[1, 1].set_title("Fake Synthetic (Real→Syn)", fontsize=12)
             axes[1, 1].axis('off')
             
-            # Add epoch information as a suptitle
-            plt.suptitle(f"Epoch {epoch}/{epochs}", fontsize=14)
+            # Add epoch information to each title instead of using a suptitle
+            for ax in axes.flatten():
+                title = ax.get_title()
+                ax.set_title(f"{title}\nEpoch {epoch}/{epochs}", fontsize=12)
             
-            # Ensure the layout is tight
-            plt.tight_layout(rect=[0, 0, 1, 0.96])  # Leave room for suptitle
+            # Ensure the layout is tight without reserving space for suptitle
+            plt.tight_layout()
             plt.savefig(os.path.join(viz_dir, f"comparison_epoch{epoch}.png"), dpi=150, bbox_inches='tight')
             plt.close()
             
@@ -442,12 +460,19 @@ def main():
             cb = fig.colorbar(imgs[0], cax=cbar_ax)
             cb.set_label('Pixel Intensity')
             
-            plt.suptitle(f"Comparison at Epoch {epoch}", fontsize=14)
+            # Add epoch information to each title instead of using a suptitle
+            for ax in axes.flatten():
+                title = ax.get_title()
+                ax.set_title(f"{title}\nEpoch {epoch}", fontsize=12)
+                
+            # Ensure the layout is tight without reserving space for suptitle
+            fig.tight_layout(rect=[0, 0, 0.85, 1.0])  # Only account for colorbar space
             plt.savefig(os.path.join(viz_dir, f"analysis_epoch{epoch}.png"), dpi=150, bbox_inches='tight')
             plt.close()
         
-        # Save models every 10 epochs
-        if epoch % 10 == 0 or epoch == epochs:
+        # Save models based on config
+        save_model_every = config['visualization']['save_model_every']
+        if epoch % save_model_every == 0 or epoch == epochs:
             torch.save(G.state_dict(), os.path.join(output_dir, f'G_epoch{epoch}.pth'))
             torch.save(F.state_dict(), os.path.join(output_dir, f'F_epoch{epoch}.pth'))
             torch.save(D_real.state_dict(), os.path.join(output_dir, f'D_real_epoch{epoch}.pth'))

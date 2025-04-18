@@ -471,29 +471,64 @@ def generate_single_slice(args):
     return i
 
 # --- Main Execution Block ---
+def parse_arguments():
+    """Parse command line arguments for the generator."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate synthetic XCT slices with multi-label masks")
+    parser.add_argument("--output_dir", type=str, default="./synthetic_data",
+                        help="Output directory for generated data")
+    parser.add_argument("--num_slices", type=int, default=50,
+                        help="Number of slices to generate")
+    parser.add_argument("--crop_size", type=int, default=2560,
+                        help="Final output size after cropping center")
+    parser.add_argument("--randomize", action="store_true", default=True,
+                        help="Randomize parameters for each slice")
+    parser.add_argument("--plot_single_slice", action="store_true", default=True,
+                        help="Plot the first slice (only if num_slices=1)")
+    parser.add_argument("--num_workers", type=int, default=12,
+                        help="Number of parallel workers")
+    parser.add_argument("--image_size", type=int, default=2560,
+                        help="Size of the generated image")
+    parser.add_argument("--outer_circle_size", type=int, default=2420,
+                        help="Size of the outer circle")
+    parser.add_argument("--inner_circle_size", type=int, default=1860,
+                        help="Size of the inner circle")
+    parser.add_argument("--num_particles", type=int, default=3700,
+                        help="Number of particles to place")
+    parser.add_argument("--particle_min_grey", type=int, default=2260,
+                        help="Minimum grey value for particles")
+    parser.add_argument("--particle_max_grey", type=int, default=20920,
+                        help="Maximum grey value for particles")
+    
+    return parser.parse_args()
+
 if __name__ == "__main__":
     print("Generating synthetic XCT slices with multi-label masks in parallel...")
-
+    
+    # Parse command line arguments
+    args = parse_arguments()
+    
     # --- Central Configuration Dictionary ---
     # All parameters are defined here for easy access and modification.
     config = {
         "generation": {
-            "output_dir": Path("./synthetic_data_refactored"),
-            "num_slices": 50,
-            "crop_size": 2560, # Final output size after cropping center
-            "randomize": True, # Set to False to use exact base parameters
-            "plot_single_slice": True, # Disable plotting in parallel mode
-            "num_workers": 12
+            "output_dir": Path(args.output_dir),
+            "num_slices": args.num_slices,
+            "crop_size": args.crop_size,
+            "randomize": args.randomize,
+            "plot_single_slice": args.plot_single_slice,
+            "num_workers": args.num_workers
         },
         "image": {
-            "size": 2560,
-            "outer_circle_size": 2420,
-            "inner_circle_size": 1860,
+            "size": args.image_size,
+            "outer_circle_size": args.outer_circle_size,
+            "inner_circle_size": args.inner_circle_size,
             "base_grey": 29000,
             "inner_circle_grey": 40000,
             "outer_circle_grey": 50000,
-            "particle_grey_range": (2260, 20920),
-            "num_particles": 3700,
+            "particle_grey_range": (args.particle_min_grey, args.particle_max_grey),
+            "num_particles": args.num_particles,
             "attraction_radius": 30,
             "attraction_strength": 0.1e5,
             "cell_size": 100 # For spatial grid efficiency

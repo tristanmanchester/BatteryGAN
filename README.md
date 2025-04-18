@@ -64,12 +64,17 @@ BatteryGAN/
 ### 1. Train the Enhanced CycleGAN
 
 ```bash
-pixi run python run_training.py
+pixi run python run_training.py --config config.yaml
 ```
-- Uses `data/real_data/` and `data/synthetic_data/data/` by default
+- Configuration is loaded from the YAML config file
 - Automatically selects the best available device (CUDA, MPS, or CPU)
 - Features 9 residual blocks, multi-scale discriminator, and perceptual loss
 - Model checkpoints and sample images will be saved to `output/`
+
+You can create custom configuration files and specify them:
+```bash
+pixi run python run_training.py --config custom_config.yaml
+```
 
 ### 2. Generate Realistic Data
 
@@ -84,10 +89,50 @@ pixi run python generate.py \
   --image_size 512 \
   --residual_blocks 9
 ```
-- This will create `generated_data/data/` (realistic images) and `generated_data/labels/` (copied labels)
+- This will create `generated_data/data/` (realistic images) and `generated_data/labels/` (copied labels) 
 - The `--residual_blocks` parameter should match what was used during training
+- All images will be resized to the specified `--image_size` during processing
 
 ## Advanced Configuration
+
+### Config File Structure
+
+Training parameters can be configured using a YAML file:
+
+```yaml
+# Data paths
+data:
+  real_dir: "./data/real_data"
+  synthetic_dir: "./data/synthetic_data/data"
+  output_dir: "./output"
+
+# Training parameters
+training:
+  batch_size: 1
+  epochs: 50
+  lr_g: 1e-4  # Generator learning rate
+  lr_d: 4e-4  # Discriminator learning rate (TTUR)
+  image_size: 256  # Image size
+  lambda_cycle: 10.0  # Cycle consistency weight
+  lambda_identity: 5.0  # Identity loss weight
+  lambda_perceptual: 1.0  # Perceptual loss weight
+  n_residual_blocks: 9  # Number of residual blocks in generator
+  use_multi_scale: true  # Whether to use multi-scale discriminator
+  use_amp: null  # Set to null to auto-detect (true for CUDA, false for MPS)
+
+# Optimizer settings
+optimizer:
+  betas: [0.5, 0.999]  # Adam optimizer betas
+
+# Visualization settings
+visualization:
+  save_sample_every: 5  # Save sample images every N epochs
+  save_model_every: 10  # Save model checkpoints every N epochs
+```
+
+See `config.yaml` for default values.
+
+### Model Improvements
 
 The enhanced model includes several improvements:
 - **Residual Blocks**: Deeper network with 9 residual blocks for better feature extraction

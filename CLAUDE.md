@@ -3,8 +3,10 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Build/Run Commands
-- Run training: `pixi run python run_training.py`
+- Run training: `pixi run python run_training.py --config config.yaml`
+- Run training with custom config: `pixi run python run_training.py --config custom_config.yaml`
 - Generate data: `pixi run python generate.py --model_path <path> --synthetic_dir <dir> --labels_dir <dir> --output_dir <dir> --image_size 512 --residual_blocks 9`
+- Generate synthetic data: `pixi run python slice_generator.py --output_dir <dir> --num_slices 50 --image_size 2560`
 - Install dependencies: `pixi install`
 - Debug image loading: `pixi run python debug_image.py`
 

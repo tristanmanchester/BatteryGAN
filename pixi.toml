@@ -13,6 +13,7 @@ opencv = ">=4.11.0,<5"
 tqdm = ">=4.67.1,<5"
 matplotlib = ">=3.10.1,<4"
 tifffile = ">=2025.3.30,<2026"
+pyyaml = ">=6.0.2,<7"
 
 [pypi-dependencies]
 torch = "*"

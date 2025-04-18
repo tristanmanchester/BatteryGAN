@@ -1,0 +1,30 @@
+# BatteryGAN Training Configuration
+
+# Data paths
+data:
+  real_dir: "./data/real_data"
+  synthetic_dir: "./data/synthetic_data/data"
+  output_dir: "./output"
+
+# Training parameters
+training:
+  batch_size: 1
+  epochs: 50
+  lr_g: "0.0001"  # Generator learning rate (changed from 1e-4 for better parsing)
+  lr_d: "0.0004"  # Discriminator learning rate (changed from 4e-4 for better parsing)
+  image_size: 256  # Image size
+  lambda_cycle: 10.0  # Cycle consistency weight
+  lambda_identity: 5.0  # Identity loss weight
+  lambda_perceptual: 1.0  # Perceptual loss weight
+  n_residual_blocks: 9  # Number of residual blocks in generator
+  use_multi_scale: true  # Whether to use multi-scale discriminator
+  use_amp: null  # Set to null to auto-detect (true for CUDA, false for MPS)
+
+# Optimizer settings
+optimizer:
+  betas: [0.5, 0.999]  # Adam optimizer betas
+
+# Visualization settings
+visualization:
+  save_sample_every: 5  # Save sample images every N epochs
+  save_model_every: 10  # Save model checkpoints every N epochs
