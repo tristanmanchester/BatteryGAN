@@ -9,7 +9,7 @@ data:
 # Training parameters
 training:
   batch_size: 1
-  epochs: 50
+  epochs: 200
   lr_g: "0.0001"  # Generator learning rate (changed from 1e-4 for better parsing)
   lr_d: "0.0004"  # Discriminator learning rate (changed from 4e-4 for better parsing)
   image_size: 256  # Image size
@@ -23,6 +23,11 @@ training:
 # Optimizer settings
 optimizer:
   betas: [0.5, 0.999]  # Adam optimizer betas
+
+# Advanced training settings
+advanced:
+  min_lr_factor: 0.2  # Minimum learning rate as factor of initial LR (prevents LR from going too low)
+  noise_std: 0.01     # Random noise to add to discriminator inputs (helps stabilize training)
 
 # Visualization settings
 visualization:

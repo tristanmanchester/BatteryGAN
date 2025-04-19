@@ -9,6 +9,10 @@ import torchvision.models as models
 import itertools
 import yaml
 import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
+from datetime import datetime
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler  # Using torch.amp instead of torch.cuda.amp
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -70,6 +74,65 @@ def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
+def update_metrics_plot(metrics, output_dir):
+    """Create and update metrics plots during training"""
+    metrics_dir = os.path.join(output_dir, "metrics")
+    
+    # Create figure with two subplots (for generator and discriminators)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12), sharex=True)
+    
+    epochs = list(range(1, len(metrics["g_loss"]) + 1))
+    
+    # Generator losses
+    ax1.plot(epochs, metrics["g_loss"], 'b-', label="Generator Loss")
+    ax1.set_ylabel("Loss Value")
+    ax1.set_title("Generator Loss")
+    ax1.grid(True, linestyle='--', alpha=0.7)
+    ax1.legend()
+    
+    # Discriminator losses
+    ax2.plot(epochs, metrics["d_real_loss"], 'r-', label="D_real Loss")
+    ax2.plot(epochs, metrics["d_syn_loss"], 'g-', label="D_syn Loss")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Loss Value")
+    ax2.set_title("Discriminator Losses")
+    ax2.grid(True, linestyle='--', alpha=0.7)
+    ax2.legend()
+    
+    # Common settings
+    for ax in (ax1, ax2):
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))  # Only show integer ticks
+        
+    plt.tight_layout()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    plt.savefig(os.path.join(metrics_dir, f"losses.png"), dpi=150)
+    plt.close()
+    
+    # Create a learning rate plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, metrics["lr_g"], 'b-', label="Generator LR")
+    plt.xlabel("Epoch")
+    plt.ylabel("Learning Rate")
+    plt.title("Learning Rate Schedule")
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(metrics_dir, f"learning_rates.png"), dpi=150)
+    plt.close()
+    
+    # Create a log-scale plot for discriminator losses (helpful for very small values)
+    plt.figure(figsize=(10, 6))
+    plt.semilogy(epochs, metrics["d_real_loss"], 'r-', label="D_real Loss")
+    plt.semilogy(epochs, metrics["d_syn_loss"], 'g-', label="D_syn Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss Value (log scale)")
+    plt.title("Discriminator Losses (Log Scale)")
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(metrics_dir, f"disc_losses_log.png"), dpi=150)
+    plt.close()
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train BatteryGAN model')
@@ -84,9 +147,12 @@ def main():
     synthetic_dir = config['data']['synthetic_dir']
     output_dir = config['data']['output_dir']
     
-    # Create output directory if it doesn't exist
+    # Create output directory structure
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "samples"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "models"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "visualizations"), exist_ok=True)
     
     # Training parameters
     batch_size = int(config['training']['batch_size'])
@@ -160,10 +226,14 @@ def main():
     optimizer_D_real = torch.optim.Adam(D_real.parameters(), lr=lr_d, betas=betas)
     optimizer_D_syn = torch.optim.Adam(D_syn.parameters(), lr=lr_d, betas=betas)
     
-    # Learning rate schedulers
-    scheduler_G = CosineAnnealingLR(optimizer_G, T_max=epochs)
-    scheduler_D_real = CosineAnnealingLR(optimizer_D_real, T_max=epochs)
-    scheduler_D_syn = CosineAnnealingLR(optimizer_D_syn, T_max=epochs)
+    # Learning rate schedulers with minimum LR
+    min_lr_factor = config.get('advanced', {}).get('min_lr_factor', 0.2)
+    min_lr_g = lr_g * min_lr_factor
+    min_lr_d = lr_d * min_lr_factor
+    
+    scheduler_G = CosineAnnealingLR(optimizer_G, T_max=epochs, eta_min=min_lr_g)
+    scheduler_D_real = CosineAnnealingLR(optimizer_D_real, T_max=epochs, eta_min=min_lr_d)
+    scheduler_D_syn = CosineAnnealingLR(optimizer_D_syn, T_max=epochs, eta_min=min_lr_d)
     
     # Loss functions
     criterion_GAN = torch.nn.MSELoss()
@@ -173,12 +243,27 @@ def main():
     # Initialize gradient scaler for mixed precision training
     scaler = GradScaler() if use_amp else None
     
+    # Initialize metrics tracking
+    metrics = {
+        "g_loss": [],
+        "d_real_loss": [],
+        "d_syn_loss": [],
+        "lr_g": []
+    }
+    
     print("Starting training...")
     
     for epoch in range(1, epochs + 1):
         total_g_loss = 0
         total_d_real_loss = 0
         total_d_syn_loss = 0
+        
+        # For tracking batch-level metrics for more detailed analysis
+        batch_metrics = {
+            "g_loss": [],
+            "d_real_loss": [],
+            "d_syn_loss": []
+        }
         
         for i, batch in enumerate(dataloader):
             real = batch['real'].to(device)
@@ -188,9 +273,20 @@ def main():
             #  Train Generators
             # ------------------
             with autocast(amp_device_type, enabled=use_amp):
+                # Get noise standard deviation from config
+                noise_std = config.get('advanced', {}).get('noise_std', 0.01)
+                
+                # Add noise to inputs to prevent discriminator from becoming too confident
+                if noise_std > 0:
+                    real_noisy = real + torch.randn_like(real) * noise_std
+                    synthetic_noisy = synthetic + torch.randn_like(synthetic) * noise_std
+                else:
+                    real_noisy = real
+                    synthetic_noisy = synthetic
+                
                 # Forward pass
-                fake_real = G(synthetic)  # G(synthetic) = fake_real
-                fake_syn = F(real)        # F(real) = fake_syn
+                fake_real = G(synthetic_noisy)  # G(synthetic) = fake_real
+                fake_syn = F(real_noisy)        # F(real) = fake_syn
                 
                 # Cycle consistency
                 rec_syn = F(fake_real)    # F(G(synthetic)) = rec_syn
@@ -248,25 +344,39 @@ def main():
             #  Train Discriminator Real
             # -----------------------
             with autocast(amp_device_type, enabled=use_amp):
+                # Instance noise for discriminator (helps with training stability)
+                noise_std = config.get('advanced', {}).get('noise_std', 0.01)
+                
+                # Add noise to inputs to prevent discriminator from becoming too confident
+                if noise_std > 0:
+                    real_d = real + torch.randn_like(real) * noise_std 
+                    fake_real_d = fake_real.detach() + torch.randn_like(fake_real.detach()) * noise_std
+                else:
+                    real_d = real
+                    fake_real_d = fake_real.detach()
+                
                 if use_multi_scale:
                     # For multi-scale discriminator
-                    pred_real_orig, pred_real_down = D_real(real)
-                    pred_fake_orig, pred_fake_down = D_real(fake_real.detach())
+                    pred_real_orig, pred_real_down = D_real(real_d)
+                    pred_fake_orig, pred_fake_down = D_real(fake_real_d)
                     
-                    valid_orig = torch.ones_like(pred_real_orig, device=device)
-                    valid_down = torch.ones_like(pred_real_down, device=device)
-                    fake_orig = torch.zeros_like(pred_fake_orig, device=device)
-                    fake_down = torch.zeros_like(pred_fake_down, device=device)
+                    # Use soft labels (0.9 instead of 1.0, 0.1 instead of 0.0) to prevent overconfidence
+                    valid_orig = torch.ones_like(pred_real_orig, device=device) * 0.9
+                    valid_down = torch.ones_like(pred_real_down, device=device) * 0.9
+                    fake_orig = torch.zeros_like(pred_fake_orig, device=device) + 0.1
+                    fake_down = torch.zeros_like(pred_fake_down, device=device) + 0.1
                     
                     real_loss = criterion_GAN(pred_real_orig, valid_orig) + criterion_GAN(pred_real_down, valid_down)
                     fake_loss = criterion_GAN(pred_fake_orig, fake_orig) + criterion_GAN(pred_fake_down, fake_down)
                     loss_D_real = (real_loss + fake_loss) / 4.0
                 else:
                     # Standard discriminator
-                    pred_real = D_real(real)
-                    pred_fake = D_real(fake_real.detach())
-                    valid = torch.ones_like(pred_real, device=device)
-                    fake = torch.zeros_like(pred_fake, device=device)
+                    pred_real = D_real(real_d)
+                    pred_fake = D_real(fake_real_d)
+                    
+                    # Use soft labels (0.9 instead of 1.0, 0.1 instead of 0.0) to prevent overconfidence
+                    valid = torch.ones_like(pred_real, device=device) * 0.9
+                    fake = torch.zeros_like(pred_fake, device=device) + 0.1
                     loss_D_real = 0.5 * (criterion_GAN(pred_real, valid) + criterion_GAN(pred_fake, fake))
             
             # Optimize discriminator real
@@ -282,25 +392,34 @@ def main():
             #  Train Discriminator Synthetic
             # ---------------------------
             with autocast(amp_device_type, enabled=use_amp):
+                # Apply noise to synthetic discriminator inputs as well
+                if noise_std > 0:
+                    synthetic_d = synthetic + torch.randn_like(synthetic) * noise_std
+                    fake_syn_d = fake_syn.detach() + torch.randn_like(fake_syn.detach()) * noise_std
+                else:
+                    synthetic_d = synthetic
+                    fake_syn_d = fake_syn.detach()
+                
                 if use_multi_scale:
                     # For multi-scale discriminator
-                    pred_real_syn_orig, pred_real_syn_down = D_syn(synthetic)
-                    pred_fake_syn_orig, pred_fake_syn_down = D_syn(fake_syn.detach())
+                    pred_real_syn_orig, pred_real_syn_down = D_syn(synthetic_d)
+                    pred_fake_syn_orig, pred_fake_syn_down = D_syn(fake_syn_d)
                     
-                    valid_orig = torch.ones_like(pred_real_syn_orig, device=device)
-                    valid_down = torch.ones_like(pred_real_syn_down, device=device)
-                    fake_orig = torch.zeros_like(pred_fake_syn_orig, device=device)
-                    fake_down = torch.zeros_like(pred_fake_syn_down, device=device)
+                    # Soft labels for synthetic discriminator too
+                    valid_orig = torch.ones_like(pred_real_syn_orig, device=device) * 0.9
+                    valid_down = torch.ones_like(pred_real_syn_down, device=device) * 0.9
+                    fake_orig = torch.zeros_like(pred_fake_syn_orig, device=device) + 0.1
+                    fake_down = torch.zeros_like(pred_fake_syn_down, device=device) + 0.1
                     
                     real_loss = criterion_GAN(pred_real_syn_orig, valid_orig) + criterion_GAN(pred_real_syn_down, valid_down)
                     fake_loss = criterion_GAN(pred_fake_syn_orig, fake_orig) + criterion_GAN(pred_fake_syn_down, fake_down)
                     loss_D_syn = (real_loss + fake_loss) / 4.0
                 else:
                     # Standard discriminator
-                    pred_real_syn = D_syn(synthetic)
-                    pred_fake_syn = D_syn(fake_syn.detach())
-                    valid = torch.ones_like(pred_real_syn, device=device)
-                    fake = torch.zeros_like(pred_fake_syn, device=device)
+                    pred_real_syn = D_syn(synthetic_d)
+                    pred_fake_syn = D_syn(fake_syn_d)
+                    valid = torch.ones_like(pred_real_syn, device=device) * 0.9
+                    fake = torch.zeros_like(pred_fake_syn, device=device) + 0.1
                     loss_D_syn = 0.5 * (criterion_GAN(pred_real_syn, valid) + criterion_GAN(pred_fake_syn, fake))
             
             # Optimize discriminator synthetic
@@ -317,9 +436,18 @@ def main():
                 scaler.update()
             
             # Track losses
-            total_g_loss += loss_G.item()
-            total_d_real_loss += loss_D_real.item()
-            total_d_syn_loss += loss_D_syn.item()
+            g_loss_val = loss_G.item()
+            d_real_loss_val = loss_D_real.item()
+            d_syn_loss_val = loss_D_syn.item()
+            
+            total_g_loss += g_loss_val
+            total_d_real_loss += d_real_loss_val
+            total_d_syn_loss += d_syn_loss_val
+            
+            # Store batch-level metrics
+            batch_metrics["g_loss"].append(g_loss_val)
+            batch_metrics["d_real_loss"].append(d_real_loss_val)
+            batch_metrics["d_syn_loss"].append(d_syn_loss_val)
             
             if i % 10 == 0:
                 print(f"Epoch [{epoch}/{epochs}] Batch [{i}/{len(dataloader)}] "
@@ -337,11 +465,50 @@ def main():
         avg_d_real_loss = total_d_real_loss / len(dataloader)
         avg_d_syn_loss = total_d_syn_loss / len(dataloader)
         
+        current_lr = scheduler_G.get_last_lr()[0]
         print(f"Epoch [{epoch}/{epochs}] "
               f"Avg_Loss_G: {avg_g_loss:.4f} "
               f"Avg_Loss_D_real: {avg_d_real_loss:.4f} "
               f"Avg_Loss_D_syn: {avg_d_syn_loss:.4f} "
-              f"LR_G: {scheduler_G.get_last_lr()[0]:.6f}")
+              f"LR_G: {current_lr:.6f}")
+              
+        # Store metrics for plotting
+        metrics["g_loss"].append(avg_g_loss)
+        metrics["d_real_loss"].append(avg_d_real_loss)
+        metrics["d_syn_loss"].append(avg_d_syn_loss)
+        metrics["lr_g"].append(current_lr)
+        
+        # Update metrics plot every few epochs
+        if epoch % 5 == 0 or epoch == 1 or epoch == epochs:
+            update_metrics_plot(metrics, output_dir)
+            
+            # Save raw metrics data as CSV for further analysis
+            metrics_dir = os.path.join(output_dir, "metrics")
+            with open(os.path.join(metrics_dir, "training_metrics.csv"), "w") as f:
+                f.write("epoch,g_loss,d_real_loss,d_syn_loss,lr_g\n")
+                for i in range(len(metrics["g_loss"])):
+                    f.write(f"{i+1},{metrics['g_loss'][i]},{metrics['d_real_loss'][i]},{metrics['d_syn_loss'][i]},{metrics['lr_g'][i]}\n")
+            
+            # Save batch-level metrics for the current epoch
+            with open(os.path.join(metrics_dir, f"batch_metrics_epoch{epoch}.csv"), "w") as f:
+                f.write("batch,g_loss,d_real_loss,d_syn_loss\n")
+                for i in range(len(batch_metrics["g_loss"])):
+                    f.write(f"{i+1},{batch_metrics['g_loss'][i]},{batch_metrics['d_real_loss'][i]},{batch_metrics['d_syn_loss'][i]}\n")
+        
+            # Plot batch-level metrics for the current epoch
+            plt.figure(figsize=(12, 8))
+            batches = list(range(1, len(batch_metrics["g_loss"]) + 1))
+            plt.plot(batches, batch_metrics["g_loss"], 'b-', label="Generator Loss", alpha=0.7)
+            plt.plot(batches, batch_metrics["d_real_loss"], 'r-', label="D_real Loss", alpha=0.7)
+            plt.plot(batches, batch_metrics["d_syn_loss"], 'g-', label="D_syn Loss", alpha=0.7)
+            plt.xlabel("Batch")
+            plt.ylabel("Loss Value")
+            plt.title(f"Batch-level Losses for Epoch {epoch}")
+            plt.grid(True, linestyle='--', alpha=0.5)
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(os.path.join(metrics_dir, f"batch_losses_epoch{epoch}.png"), dpi=150)
+            plt.close()
         
         # Save sample outputs based on config
         save_sample_every = config['visualization']['save_sample_every']
@@ -473,10 +640,11 @@ def main():
         # Save models based on config
         save_model_every = config['visualization']['save_model_every']
         if epoch % save_model_every == 0 or epoch == epochs:
-            torch.save(G.state_dict(), os.path.join(output_dir, f'G_epoch{epoch}.pth'))
-            torch.save(F.state_dict(), os.path.join(output_dir, f'F_epoch{epoch}.pth'))
-            torch.save(D_real.state_dict(), os.path.join(output_dir, f'D_real_epoch{epoch}.pth'))
-            torch.save(D_syn.state_dict(), os.path.join(output_dir, f'D_syn_epoch{epoch}.pth'))
+            models_dir = os.path.join(output_dir, "models")
+            torch.save(G.state_dict(), os.path.join(models_dir, f'G_epoch{epoch}.pth'))
+            torch.save(F.state_dict(), os.path.join(models_dir, f'F_epoch{epoch}.pth'))
+            torch.save(D_real.state_dict(), os.path.join(models_dir, f'D_real_epoch{epoch}.pth'))
+            torch.save(D_syn.state_dict(), os.path.join(models_dir, f'D_syn_epoch{epoch}.pth'))
     
     print('Training complete.')
 
