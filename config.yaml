@@ -19,6 +19,12 @@ training:
   n_residual_blocks: 9  # Number of residual blocks in generator
   use_multi_scale: true  # Whether to use multi-scale discriminator
   use_amp: null  # Set to null to auto-detect (true for CUDA, false for MPS)
+  
+# Model architecture parameters
+model:
+  gen_features: 64   # Base feature channels in generator
+  disc_features: 64  # Base feature channels in discriminator
+  disc_layers: [64, 128, 256, 512]  # Discriminator layer sizes
 
 # Optimizer settings
 optimizer:
@@ -28,6 +34,8 @@ optimizer:
 advanced:
   min_lr_factor: 0.2  # Minimum learning rate as factor of initial LR (prevents LR from going too low)
   noise_std: 0.01     # Random noise to add to discriminator inputs (helps stabilize training)
+  use_gradient_checkpointing: true  # Enable gradient checkpointing to save memory
+  self_attention_downsample: 2      # Downsample factor for self-attention (higher = more memory efficient)
 
 # Visualization settings
 visualization:

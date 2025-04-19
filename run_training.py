@@ -19,6 +19,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from src.datasets import UnpairedDataset
 from src.models import Generator, MultiScaleDiscriminator, Discriminator
 from src.train import get_device
+from src.utils import save_image
 
 class VGGPerceptualLoss(nn.Module):
     """VGG-based perceptual loss"""
@@ -199,17 +200,68 @@ def main():
     print(f"Dataset size: {len(dataset)}")
     print(f"Number of batches: {len(dataloader)}")
     
-    # Initialize models
-    G = Generator(in_channels=1, out_channels=1, features=64, n_residual_blocks=n_residual_blocks).to(device)  # Synthetic to Real
-    F = Generator(in_channels=1, out_channels=1, features=64, n_residual_blocks=n_residual_blocks).to(device)  # Real to Synthetic
+    # Get model architecture parameters from config
+    gen_features = config.get('model', {}).get('gen_features', 64)  # Default to 64 if not specified
+    disc_features = config.get('model', {}).get('disc_features', 64)
+    disc_layers = config.get('model', {}).get('disc_layers', [64, 128, 256, 512])
+    
+    # Get advanced training options
+    use_gradient_checkpointing = config.get('advanced', {}).get('use_gradient_checkpointing', False)
+    self_attention_downsample = config.get('advanced', {}).get('self_attention_downsample', 1)
+    
+    print(f"Generator base features: {gen_features}")
+    print(f"Discriminator structure: {disc_layers}")
+    print(f"Gradient checkpointing: {'Enabled' if use_gradient_checkpointing else 'Disabled'}")
+    print(f"Self-attention downsample factor: {self_attention_downsample}")
+    
+    # Initialize models with memory optimizations
+    G = Generator(
+        in_channels=1, 
+        out_channels=1, 
+        features=gen_features, 
+        n_residual_blocks=n_residual_blocks,
+        self_attention_downsample=self_attention_downsample,
+        use_checkpoint=use_gradient_checkpointing
+    ).to(device)  # Synthetic to Real
+    
+    F = Generator(
+        in_channels=1, 
+        out_channels=1, 
+        features=gen_features, 
+        n_residual_blocks=n_residual_blocks,
+        self_attention_downsample=self_attention_downsample,
+        use_checkpoint=use_gradient_checkpointing
+    ).to(device)  # Real to Synthetic
     
     # Use either standard discriminator or multi-scale discriminator
     if use_multi_scale:
-        D_real = MultiScaleDiscriminator(in_channels=1).to(device)
-        D_syn = MultiScaleDiscriminator(in_channels=1).to(device)
+        D_real = MultiScaleDiscriminator(
+            in_channels=1, 
+            features=disc_layers,
+            self_attention_downsample=self_attention_downsample,
+            use_checkpoint=use_gradient_checkpointing
+        ).to(device)
+        
+        D_syn = MultiScaleDiscriminator(
+            in_channels=1, 
+            features=disc_layers,
+            self_attention_downsample=self_attention_downsample,
+            use_checkpoint=use_gradient_checkpointing
+        ).to(device)
     else:
-        D_real = Discriminator(in_channels=1).to(device)
-        D_syn = Discriminator(in_channels=1).to(device)
+        D_real = Discriminator(
+            in_channels=1, 
+            features=disc_layers,
+            self_attention_downsample=self_attention_downsample,
+            use_checkpoint=use_gradient_checkpointing
+        ).to(device)
+        
+        D_syn = Discriminator(
+            in_channels=1, 
+            features=disc_layers,
+            self_attention_downsample=self_attention_downsample,
+            use_checkpoint=use_gradient_checkpointing
+        ).to(device)
     
     print("Models initialized")
     
@@ -513,10 +565,6 @@ def main():
         # Save sample outputs based on config
         save_sample_every = config['visualization']['save_sample_every']
         if epoch % save_sample_every == 0 or epoch == 1:
-            from src.utils import save_image
-            import matplotlib.pyplot as plt
-            import numpy as np
-            
             # Get the first image from each batch
             sample_real = real[0]
             sample_syn = synthetic[0]
